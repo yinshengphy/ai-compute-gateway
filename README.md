@@ -1,24 +1,24 @@
 # ai-compute-gateway
 
-Spring Boot gateway for private AI compute. It exposes OpenAI-compatible internal APIs and proxies to the private Ollama runtime.
+私有 AI 计算的 Spring Boot 网关。它对集群内部暴露 OpenAI 兼容 API，并代理到私有 Ollama 运行时。
 
-## APIs
+## 接口
 
 - `POST /v1/chat/completions`
 - `POST /v1/embeddings`
 - `GET /v1/models`
 - `GET /internal/queue/status`
 
-All public AI workloads should call this gateway instead of talking to Ollama directly.
+所有公开入口产生的 AI 计算请求都应该调用这个网关，不要直接访问 Ollama。
 
-The gateway sends `keep_alive` to Ollama so the chat model stays warm between requests. Defaults:
+网关会向 Ollama 发送 `keep_alive`，让聊天模型在请求间保持热加载。默认值：
 
-- Chat model: `huihui-qwen3:4b-instruct-2507-abliterated-q4_K_M`
-- Fallback chat model: `qwen2.5:3b`
-- Chat keep-alive: `10m`
-- Embedding keep-alive: `5m`
+- 聊天模型：`huihui-qwen3:4b-instruct-2507-abliterated-q4_K_M`
+- 备用聊天模型：`qwen2.5:3b`
+- 聊天模型保活时间：`10m`
+- Embedding 模型保活时间：`5m`
 
-## Local Run
+## 本地运行
 
 ```bash
 export AI_COMPUTE_API_TOKEN=dev-token

@@ -1,4 +1,4 @@
-name: Build AI Compute Gateway
+name: 构建 AI 计算网关
 
 on:
   push:
@@ -31,13 +31,13 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           clean: false
 
-      - name: Check dependency cache
+      - name: 检查依赖缓存
         id: deps
         run: |
           set -euo pipefail
@@ -46,13 +46,13 @@ jobs:
 
           if [ -d .runner-cache/m2 ] && [ -f .runner-cache/deps.sha ] && cmp -s .runner-cache/deps.sha.current .runner-cache/deps.sha; then
             echo "refresh=false" >> "$GITHUB_OUTPUT"
-            echo "pom.xml unchanged -> use cached Maven dependencies"
+            echo "pom.xml 未变化，使用缓存的 Maven 依赖"
           else
             echo "refresh=true" >> "$GITHUB_OUTPUT"
-            echo "pom.xml changed or cache missing -> refresh Maven dependencies"
+            echo "pom.xml 已变化或缓存缺失，刷新 Maven 依赖"
           fi
 
-      - name: Build
+      - name: 构建
         run: |
           if [ "${{ steps.deps.outputs.refresh }}" = "true" ]; then
             mvn -B -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
