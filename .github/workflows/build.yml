@@ -1,0 +1,62 @@
+name: Build AI Compute Gateway
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ai-compute-gateway-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on:
+      - self-hosted
+      - ai-compute-gateway
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: false
+
+      - name: Check dependency cache
+        id: deps
+        run: |
+          set -euo pipefail
+          mkdir -p .runner-cache/m2
+          sha256sum pom.xml | awk '{print $1}' > .runner-cache/deps.sha.current
+
+          if [ -d .runner-cache/m2 ] && [ -f .runner-cache/deps.sha ] && cmp -s .runner-cache/deps.sha.current .runner-cache/deps.sha; then
+            echo "refresh=false" >> "$GITHUB_OUTPUT"
+            echo "pom.xml unchanged -> use cached Maven dependencies"
+          else
+            echo "refresh=true" >> "$GITHUB_OUTPUT"
+            echo "pom.xml changed or cache missing -> refresh Maven dependencies"
+          fi
+
+      - name: Build
+        run: |
+          if [ "${{ steps.deps.outputs.refresh }}" = "true" ]; then
+            mvn -B -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
+            cp .runner-cache/deps.sha.current .runner-cache/deps.sha
+          else
+            mvn -B -o -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
+          fi
