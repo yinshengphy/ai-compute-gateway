@@ -41,7 +41,7 @@ public class OllamaProxy {
     try {
       message = chatWithModel(model, request, maxTokens, temperature);
     } catch (Exception ex) {
-      if (fallbackModel.equals(model)) {
+      if (fallbackModel.equals(model) || containsImages(request)) {
         throw ex;
       }
       model = fallbackModel;
@@ -94,7 +94,7 @@ public class OllamaProxy {
       streamChatWithModel(model, request, maxTokens, temperature, chunkConsumer);
       return model;
     } catch (Exception ex) {
-      if (fallbackModel.equals(model)) {
+      if (fallbackModel.equals(model) || containsImages(request)) {
         throw ex;
       }
       streamChatWithModel(fallbackModel, request, maxTokens, temperature, chunkConsumer);
@@ -176,6 +176,18 @@ public class OllamaProxy {
       return List.of();
     }
     return messages.stream().map(this::ollamaMessage).toList();
+  }
+
+  private boolean containsImages(ChatCompletionRequest request) {
+    if (request.messages() == null) return false;
+    for (ChatCompletionRequest.Message message : request.messages()) {
+      if (message.images() != null && !message.images().isEmpty()) return true;
+      if (!(message.content() instanceof List<?> parts)) continue;
+      for (Object part : parts) {
+        if (part instanceof Map<?, ?> map && "image_url".equals(String.valueOf(map.get("type")))) return true;
+      }
+    }
+    return false;
   }
 
   private Map<String, Object> ollamaMessage(ChatCompletionRequest.Message message) {

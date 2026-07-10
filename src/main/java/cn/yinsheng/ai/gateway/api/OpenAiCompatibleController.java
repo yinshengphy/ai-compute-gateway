@@ -13,6 +13,8 @@ import java.util.Map;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -20,6 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class OpenAiCompatibleController {
+  private static final Logger log = LoggerFactory.getLogger(OpenAiCompatibleController.class);
   private final OllamaProxy ollamaProxy;
   private final ComputeQueue computeQueue;
   private final ObjectMapper objectMapper;
@@ -56,6 +59,17 @@ public class OpenAiCompatibleController {
         ));
         outputStream.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
         outputStream.flush();
+      } catch (Exception ex) {
+        log.error("流式聊天请求失败", ex);
+        if (!response.isCommitted()) {
+          response.reset();
+          response.sendError(HttpServletResponse.SC_BAD_GATEWAY, "模型服务暂时不可用");
+        } else {
+          var outputStream = response.getOutputStream();
+          writeSse(outputStream, Map.of("error", Map.of("message", "模型服务暂时不可用")));
+          outputStream.write("data: [DONE]\n\n".getBytes(StandardCharsets.UTF_8));
+          outputStream.flush();
+        }
       }
       return null;
     }
