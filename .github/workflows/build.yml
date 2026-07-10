@@ -142,5 +142,11 @@ jobs:
             mvn -B -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
             cp .runner-cache/deps.sha.current .runner-cache/deps.sha
           else
-            mvn -B -o -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
+            if mvn -B -o -Dmaven.repo.local="$PWD/.runner-cache/m2" test package; then
+              echo "离线构建成功"
+            else
+              echo "离线构建失败，刷新 Maven 缓存后重试"
+              mvn -B -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
+              cp .runner-cache/deps.sha.current .runner-cache/deps.sha
+            fi
           fi
