@@ -39,7 +39,10 @@ public class OpenAiCompatibleController {
       try (ComputeQueue.Lease ignored = computeQueue.enterChat()) {
         String id = "chatcmpl-" + Instant.now().toEpochMilli();
         var outputStream = response.getOutputStream();
-        String model = ollamaProxy.streamChat(request, delta -> writeSseDelta(outputStream, id, request.model(), delta));
+        String model = ollamaProxy.streamChat(
+            request,
+            chunk -> writeSseDelta(outputStream, id, request.model(), chunk.content(), chunk.toolCalls())
+        );
         writeSse(outputStream, Map.of(
             "id", id,
             "object", "chat.completion.chunk",
@@ -78,11 +81,24 @@ public class OpenAiCompatibleController {
     return computeQueue.status();
   }
 
-  private void writeSseDelta(java.io.OutputStream outputStream, String id, String model, String delta) {
+  private void writeSseDelta(
+      java.io.OutputStream outputStream,
+      String id,
+      String model,
+      String content,
+      List<Map<String, Object>> toolCalls
+  ) {
     try {
       Map<String, Object> choice = new LinkedHashMap<>();
       choice.put("index", 0);
-      choice.put("delta", Map.of("content", delta));
+      Map<String, Object> delta = new LinkedHashMap<>();
+      if (content != null && !content.isEmpty()) {
+        delta.put("content", content);
+      }
+      if (toolCalls != null && !toolCalls.isEmpty()) {
+        delta.put("tool_calls", toolCalls);
+      }
+      choice.put("delta", delta);
       choice.put("finish_reason", null);
 
       Map<String, Object> payload = new LinkedHashMap<>();

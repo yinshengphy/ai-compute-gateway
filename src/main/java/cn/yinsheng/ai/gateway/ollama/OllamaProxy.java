@@ -14,6 +14,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -36,15 +37,15 @@ public class OllamaProxy {
     int maxTokens = request.max_tokens() == null ? 1000 : request.max_tokens();
     double temperature = request.temperature() == null ? 0.2 : request.temperature();
 
-    String content;
+    JsonNode message;
     try {
-      content = chatWithModel(model, request, maxTokens, temperature);
+      message = chatWithModel(model, request, maxTokens, temperature);
     } catch (Exception ex) {
       if (fallbackModel.equals(model)) {
         throw ex;
       }
       model = fallbackModel;
-      content = chatWithModel(model, request, maxTokens, temperature);
+      message = chatWithModel(model, request, maxTokens, temperature);
     }
 
     return Map.of(
@@ -54,21 +55,14 @@ public class OllamaProxy {
         "model", model,
         "choices", List.of(Map.of(
             "index", 0,
-            "message", Map.of("role", "assistant", "content", content),
+            "message", openAiAssistantMessage(message),
             "finish_reason", "stop"
         ))
     );
   }
 
-  private String chatWithModel(String model, ChatCompletionRequest request, int maxTokens, double temperature) {
-    Map<String, Object> body = Map.of(
-        "model", model,
-        "stream", false,
-        "think", false,
-        "keep_alive", properties.chatKeepAlive(),
-        "messages", request.messages() == null ? List.of() : request.messages(),
-        "options", Map.of("num_predict", maxTokens, "temperature", temperature)
-    );
+  private JsonNode chatWithModel(String model, ChatCompletionRequest request, int maxTokens, double temperature) {
+    Map<String, Object> body = chatBody(model, request, false, maxTokens, temperature);
 
     JsonNode response = restClient.post()
         .uri(properties.ollamaBaseUrl() + "/api/chat")
@@ -81,27 +75,29 @@ public class OllamaProxy {
         .retrieve()
         .body(JsonNode.class);
 
-    String content = response == null ? "" : response.path("message").path("content").asText();
-    if (content == null || content.isBlank()) {
+    JsonNode message = response == null ? null : response.path("message");
+    boolean hasContent = message != null && !message.path("content").asText("").isBlank();
+    boolean hasTools = message != null && message.path("tool_calls").isArray() && !message.path("tool_calls").isEmpty();
+    if (!hasContent && !hasTools) {
       throw new IllegalStateException("Ollama chat response is empty");
     }
-    return content;
+    return message;
   }
 
-  public String streamChat(ChatCompletionRequest request, Consumer<String> deltaConsumer) {
+  public String streamChat(ChatCompletionRequest request, Consumer<StreamChunk> chunkConsumer) {
     String model = valueOrDefault(request.model(), properties.defaultChatModel());
     String fallbackModel = fallbackChatModel(model);
     int maxTokens = request.max_tokens() == null ? 1000 : request.max_tokens();
     double temperature = request.temperature() == null ? 0.2 : request.temperature();
 
     try {
-      streamChatWithModel(model, request, maxTokens, temperature, deltaConsumer);
+      streamChatWithModel(model, request, maxTokens, temperature, chunkConsumer);
       return model;
     } catch (Exception ex) {
       if (fallbackModel.equals(model)) {
         throw ex;
       }
-      streamChatWithModel(fallbackModel, request, maxTokens, temperature, deltaConsumer);
+      streamChatWithModel(fallbackModel, request, maxTokens, temperature, chunkConsumer);
       return fallbackModel;
     }
   }
@@ -111,17 +107,10 @@ public class OllamaProxy {
       ChatCompletionRequest request,
       int maxTokens,
       double temperature,
-      Consumer<String> deltaConsumer
+      Consumer<StreamChunk> chunkConsumer
   ) {
     AtomicBoolean emittedContent = new AtomicBoolean(false);
-    Map<String, Object> body = Map.of(
-        "model", model,
-        "stream", true,
-        "think", false,
-        "keep_alive", properties.chatKeepAlive(),
-        "messages", request.messages() == null ? List.of() : request.messages(),
-        "options", Map.of("num_predict", maxTokens, "temperature", temperature)
-    );
+    Map<String, Object> body = chatBody(model, request, true, maxTokens, temperature);
 
     restClient.post()
         .uri(properties.ollamaBaseUrl() + "/api/chat")
@@ -140,10 +129,15 @@ public class OllamaProxy {
                 continue;
               }
               JsonNode node = objectMapper.readTree(line);
-              String content = node.path("message").path("content").asText("");
+              JsonNode message = node.path("message");
+              String content = message.path("content").asText("");
+              List<Map<String, Object>> toolCalls = openAiToolCalls(message.path("tool_calls"));
               if (!content.isEmpty()) {
                 emittedContent.set(true);
-                deltaConsumer.accept(content);
+              }
+              if (!content.isEmpty() || !toolCalls.isEmpty()) {
+                emittedContent.set(true);
+                chunkConsumer.accept(new StreamChunk(content, toolCalls));
               }
               if (node.path("done").asBoolean(false)) {
                 break;
@@ -155,6 +149,152 @@ public class OllamaProxy {
     if (!emittedContent.get()) {
       throw new IllegalStateException("Ollama streaming chat response is empty");
     }
+  }
+
+  private Map<String, Object> chatBody(
+      String model,
+      ChatCompletionRequest request,
+      boolean stream,
+      int maxTokens,
+      double temperature
+  ) {
+    Map<String, Object> body = new LinkedHashMap<>();
+    body.put("model", model);
+    body.put("stream", stream);
+    body.put("think", false);
+    body.put("keep_alive", properties.chatKeepAlive());
+    body.put("messages", ollamaMessages(request.messages()));
+    body.put("options", Map.of("num_predict", maxTokens, "temperature", temperature));
+    if (request.tools() != null && !request.tools().isEmpty()) {
+      body.put("tools", request.tools());
+    }
+    return body;
+  }
+
+  private List<Map<String, Object>> ollamaMessages(List<ChatCompletionRequest.Message> messages) {
+    if (messages == null) {
+      return List.of();
+    }
+    return messages.stream().map(this::ollamaMessage).toList();
+  }
+
+  private Map<String, Object> ollamaMessage(ChatCompletionRequest.Message message) {
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("role", message.role());
+    MessageContent content = normalizeContent(message.content(), message.images());
+    value.put("content", content.text());
+    if (!content.images().isEmpty()) {
+      value.put("images", content.images());
+    }
+    if (message.tool_calls() != null && !message.tool_calls().isEmpty()) {
+      value.put("tool_calls", ollamaToolCalls(message.tool_calls()));
+    }
+    if (message.name() != null && !message.name().isBlank()) {
+      value.put("tool_name", message.name());
+    }
+    return value;
+  }
+
+  private List<Map<String, Object>> ollamaToolCalls(List<Map<String, Object>> calls) {
+    List<Map<String, Object>> converted = new ArrayList<>();
+    for (Map<String, Object> call : calls) {
+      Object rawFunction = call.get("function");
+      if (!(rawFunction instanceof Map<?, ?> function)) {
+        continue;
+      }
+      Object rawName = function.get("name");
+      String name = rawName == null ? "" : String.valueOf(rawName);
+      Object arguments = function.get("arguments");
+      if (arguments instanceof String json) {
+        try {
+          arguments = objectMapper.readValue(json, Map.class);
+        } catch (Exception ex) {
+          arguments = Map.of();
+        }
+      }
+      converted.add(Map.of("function", Map.of(
+          "name", name,
+          "arguments", arguments == null ? Map.of() : arguments
+      )));
+    }
+    return converted;
+  }
+
+  private MessageContent normalizeContent(Object rawContent, List<String> directImages) {
+    StringBuilder text = new StringBuilder();
+    List<String> images = new ArrayList<>();
+    if (directImages != null) {
+      directImages.stream().map(this::stripDataUrl).filter(value -> !value.isBlank()).forEach(images::add);
+    }
+    JsonNode content = objectMapper.valueToTree(rawContent);
+    if (content.isTextual()) {
+      text.append(content.asText());
+    } else if (content.isArray()) {
+      for (JsonNode part : content) {
+        String type = part.path("type").asText();
+        if ("text".equals(type)) {
+          text.append(part.path("text").asText());
+        } else if ("image_url".equals(type)) {
+          String image = stripDataUrl(part.path("image_url").path("url").asText());
+          if (!image.isBlank()) {
+            images.add(image);
+          }
+        }
+      }
+    }
+    return new MessageContent(text.toString(), images);
+  }
+
+  private String stripDataUrl(String value) {
+    if (value == null) {
+      return "";
+    }
+    int marker = value.indexOf(";base64,");
+    return marker >= 0 ? value.substring(marker + ";base64,".length()) : value;
+  }
+
+  private Map<String, Object> openAiAssistantMessage(JsonNode message) {
+    Map<String, Object> value = new LinkedHashMap<>();
+    value.put("role", "assistant");
+    value.put("content", message.path("content").asText(""));
+    List<Map<String, Object>> converted = openAiToolCalls(message.path("tool_calls"));
+    if (!converted.isEmpty()) {
+      value.put("tool_calls", converted);
+    }
+    return value;
+  }
+
+  private List<Map<String, Object>> openAiToolCalls(JsonNode calls) {
+    if (!calls.isArray() || calls.isEmpty()) {
+      return List.of();
+    }
+    AtomicInteger sequence = new AtomicInteger();
+    List<Map<String, Object>> converted = new ArrayList<>();
+    for (JsonNode call : calls) {
+        JsonNode function = call.path("function");
+        Object arguments = objectMapper.convertValue(function.path("arguments"), Object.class);
+        String argumentsJson;
+        try {
+          argumentsJson = arguments instanceof String string ? string : objectMapper.writeValueAsString(arguments);
+        } catch (Exception ex) {
+          argumentsJson = "{}";
+        }
+        converted.add(Map.of(
+            "id", "call_" + Instant.now().toEpochMilli() + "_" + sequence.incrementAndGet(),
+            "type", "function",
+            "function", Map.of(
+                "name", function.path("name").asText(""),
+                "arguments", argumentsJson
+            )
+        ));
+    }
+    return converted;
+  }
+
+  private record MessageContent(String text, List<String> images) {
+  }
+
+  public record StreamChunk(String content, List<Map<String, Object>> toolCalls) {
   }
 
   public Map<String, Object> embeddings(EmbeddingRequest request) {

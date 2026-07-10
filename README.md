@@ -9,11 +9,11 @@
 - `GET /v1/models`
 - `GET /internal/queue/status`
 
-所有公开入口产生的 AI 计算请求都应该调用这个网关，不要直接访问 Ollama。
+聊天接口兼容文本、图片内容数组、`tools`、`tool_calls` 和流式输出。所有公开入口产生的 AI 计算请求都应该调用这个网关，不要直接访问 Ollama。
 
 网关会向 Ollama 发送 `keep_alive`，让聊天模型在请求间保持热加载。默认值：
 
-- 聊天模型：`huihui-qwen3:4b-instruct-2507-abliterated-q4_K_M`
+- 聊天模型：`huihui_ai/qwen3-vl-abliterated:4b-instruct`
 - 备用聊天模型：`qwen2.5:3b`
 - 聊天模型保活时间：`10m`
 - Embedding 模型保活时间：`5m`
