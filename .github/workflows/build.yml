@@ -177,3 +177,39 @@ jobs:
             -Djib.to.auth.password="$GHCR_TOKEN" \
             jib:build
           echo "已发布 ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}"
+
+      - name: 更新生产环境镜像版本
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        env:
+          INFRA_DEPLOY_KEY: ${{ secrets.INFRA_DEPLOY_KEY }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$INFRA_DEPLOY_KEY" > "$HOME/.ssh/blog-infra"
+          chmod 600 "$HOME/.ssh/blog-infra"
+          ssh-keyscan -t ed25519 github.com >> "$HOME/.ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/blog-infra -o IdentitiesOnly=yes"
+
+          infra_dir=$(mktemp -d)
+          git clone --depth=1 git@github.com:yinshengphy/blog-infra.git "$infra_dir"
+          cd "$infra_dir"
+          sed -i -E \
+            "s#ghcr\.nju\.edu\.cn/yinshengphy/ai-compute-gateway:main-[0-9]{14}-[a-f0-9]{12}#ghcr.nju.edu.cn/yinshengphy/ai-compute-gateway:${IMAGE_TAG}#g" \
+            clusters/home/apps/ai.yaml
+          git config user.name "ai-compute-gateway-ci"
+          git config user.email "ai-compute-gateway-ci@yinshengphy.cn"
+          git add clusters/home/apps/ai.yaml
+          if git diff --cached --quiet; then
+            echo "生产环境已经使用该镜像"
+            exit 0
+          fi
+          git commit -m "chore(ai-compute-gateway): 部署 ${IMAGE_TAG}"
+          for attempt in 1 2 3; do
+            git pull --rebase origin master
+            if git push origin HEAD:master; then
+              exit 0
+            fi
+            sleep $((attempt * 3))
+          done
+          echo "更新基础设施仓库失败"
+          exit 1
