@@ -1,5 +1,9 @@
 name: 构建 AI 计算网关
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   push:
     branches:
@@ -150,3 +154,26 @@ jobs:
               cp .runner-cache/deps.sha.current .runner-cache/deps.sha
             fi
           fi
+
+      - name: 生成不可变镜像版本
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        id: image
+        run: |
+          timestamp=$(date -u +%Y%m%d%H%M%S)
+          short_sha=$(printf '%s' "$GITHUB_SHA" | cut -c1-12)
+          echo "tag=main-${timestamp}-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: 发布镜像到 GHCR
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        run: |
+          mvn -B -DskipTests \
+            -Dmaven.repo.local="$PWD/.runner-cache/m2" \
+            -Djib.to.image="ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}" \
+            -Djib.to.auth.username="$GHCR_USER" \
+            -Djib.to.auth.password="$GHCR_TOKEN" \
+            jib:build
+          echo "已发布 ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}"
