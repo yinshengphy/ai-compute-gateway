@@ -27,133 +27,25 @@ concurrency:
 
 jobs:
   build:
-    runs-on:
-      - self-hosted
-      - ai-compute-gateway
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
       run:
         shell: bash
     steps:
       - name: 检出代码
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          shopt -s dotglob nullglob
-          for item in * .*; do
-            case "$item" in
-              .|..|.runner-cache)
-                continue
-                ;;
-            esac
-            rm -rf "$item"
-          done
-          if curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            -o source.tar.gz \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/tarball/${GITHUB_SHA}"; then
-            tar -xzf source.tar.gz --strip-components=1
-            rm source.tar.gz
-          else
-            rm -f source.tar.gz
-            git config --global http.version HTTP/1.1
-            git init .
-            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-            if git fetch --depth=1 origin "${GITHUB_SHA}"; then
-              git checkout --force FETCH_HEAD
-            else
-              echo "git 拉取失败，改用 GitHub API 下载源码"
-          node <<'NODE'
-          const fs = require("fs");
-          const path = require("path");
+        uses: actions/checkout@v5
 
-          const token = process.env.GITHUB_TOKEN;
-          const repository = process.env.GITHUB_REPOSITORY;
-          const sha = process.env.GITHUB_SHA;
-          const [owner, repo] = repository.split("/");
-
-          async function githubJson(url) {
-            for (let attempt = 1; attempt <= 4; attempt += 1) {
-              const response = await fetch(url, {
-                headers: {
-                  Authorization: `Bearer ${token}`,
-                  Accept: "application/vnd.github+json",
-                  "User-Agent": "self-hosted-runner"
-                }
-              });
-              if (response.ok) {
-                return response.json();
-              }
-              if (attempt === 4) {
-                throw new Error(`${response.status} ${response.statusText} ${url}`);
-              }
-              await new Promise(resolve => setTimeout(resolve, attempt * 1500));
-            }
-          }
-
-          const commit = await githubJson(`https://api.github.com/repos/${owner}/${repo}/git/commits/${sha}`);
-          const tree = await githubJson(`https://api.github.com/repos/${owner}/${repo}/git/trees/${commit.tree.sha}?recursive=1`);
-          if (tree.truncated) {
-            throw new Error("GitHub API 返回的文件树被截断");
-          }
-
-          for (const entry of tree.tree) {
-            if (entry.type === "tree") {
-              fs.mkdirSync(entry.path, { recursive: true });
-              continue;
-            }
-            if (entry.type !== "blob") {
-              continue;
-            }
-            const blob = await githubJson(entry.url);
-            const target = path.resolve(entry.path);
-            fs.mkdirSync(path.dirname(target), { recursive: true });
-            const content = Buffer.from(blob.content.replace(/\n/g, ""), blob.encoding);
-            if (entry.mode === "120000") {
-              fs.symlinkSync(content.toString("utf8"), target);
-            } else {
-              fs.writeFileSync(target, content);
-              if (entry.mode === "100755") {
-                fs.chmodSync(target, 0o755);
-              }
-            }
-          }
-          NODE
-            fi
-            rm -rf .git
-          fi
-
-      - name: 检查依赖缓存
-        id: deps
-        run: |
-          set -euo pipefail
-          mkdir -p .runner-cache/m2
-          sha256sum pom.xml | awk '{print $1}' > .runner-cache/deps.sha.current
-
-          if [ -d .runner-cache/m2 ] && [ -f .runner-cache/deps.sha ] && cmp -s .runner-cache/deps.sha.current .runner-cache/deps.sha; then
-            echo "refresh=false" >> "$GITHUB_OUTPUT"
-            echo "pom.xml 未变化，使用缓存的 Maven 依赖"
-          else
-            echo "refresh=true" >> "$GITHUB_OUTPUT"
-            echo "pom.xml 已变化或缓存缺失，刷新 Maven 依赖"
-          fi
+      - name: 配置 Java 与 Maven 缓存
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+          cache-dependency-path: pom.xml
 
       - name: 构建
-        run: |
-          if [ "${{ steps.deps.outputs.refresh }}" = "true" ]; then
-            mvn -B -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
-            cp .runner-cache/deps.sha.current .runner-cache/deps.sha
-          else
-            if mvn -B -o -Dmaven.repo.local="$PWD/.runner-cache/m2" test package; then
-              echo "离线构建成功"
-            else
-              echo "离线构建失败，刷新 Maven 缓存后重试"
-              mvn -B -Dmaven.repo.local="$PWD/.runner-cache/m2" test package
-              cp .runner-cache/deps.sha.current .runner-cache/deps.sha
-            fi
-          fi
+        run: mvn -B test package
 
       - name: 生成不可变镜像版本
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
@@ -170,13 +62,20 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
           IMAGE_TAG: ${{ steps.image.outputs.tag }}
         run: |
-          mvn -B -DskipTests \
-            -Dmaven.repo.local="$PWD/.runner-cache/m2" \
-            -Djib.to.image="ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}" \
-            -Djib.to.auth.username="$GHCR_USER" \
-            -Djib.to.auth.password="$GHCR_TOKEN" \
-            jib:build
-          echo "已发布 ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}"
+          for attempt in 1 2 3; do
+            if mvn -B -DskipTests \
+              -Djib.to.image="ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}" \
+              -Djib.to.auth.username="$GHCR_USER" \
+              -Djib.to.auth.password="$GHCR_TOKEN" \
+              jib:build; then
+              echo "已发布 ghcr.io/yinshengphy/ai-compute-gateway:${IMAGE_TAG}"
+              exit 0
+            fi
+            echo "镜像发布失败，等待后重试（${attempt}/3）"
+            sleep $((attempt * 10))
+          done
+          echo "镜像发布重试次数已用尽"
+          exit 1
 
       - name: 更新生产环境镜像版本
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
@@ -185,13 +84,13 @@ jobs:
           IMAGE_TAG: ${{ steps.image.outputs.tag }}
         run: |
           install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$INFRA_DEPLOY_KEY" > "$HOME/.ssh/blog-infra"
-          chmod 600 "$HOME/.ssh/blog-infra"
+          printf '%s\n' "$INFRA_DEPLOY_KEY" > "$HOME/.ssh/k3s-infra"
+          chmod 600 "$HOME/.ssh/k3s-infra"
           ssh-keyscan -t ed25519 github.com >> "$HOME/.ssh/known_hosts"
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/blog-infra -o IdentitiesOnly=yes"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/k3s-infra -o IdentitiesOnly=yes"
 
           infra_dir=$(mktemp -d)
-          git clone --depth=1 git@github.com:yinshengphy/blog-infra.git "$infra_dir"
+          git clone --depth=1 git@github.com:yinshengphy/k3s-infra.git "$infra_dir"
           cd "$infra_dir"
           sed -i -E \
             "s#ghcr\.nju\.edu\.cn/yinshengphy/ai-compute-gateway:main-[0-9]{14}-[a-f0-9]{12}#ghcr.nju.edu.cn/yinshengphy/ai-compute-gateway:${IMAGE_TAG}#g" \
