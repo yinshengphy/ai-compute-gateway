@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.web.client.RestClient;
 
 @Configuration
-@EnableConfigurationProperties(GatewayProperties.class)
+@EnableConfigurationProperties({GatewayProperties.class, RemoteChatProperties.class})
 public class HttpConfig {
   @Bean
   RestClient restClient(RestTemplateBuilder builder) {

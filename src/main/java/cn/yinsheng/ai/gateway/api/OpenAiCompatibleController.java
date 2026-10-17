@@ -4,6 +4,7 @@ import cn.yinsheng.ai.gateway.model.ChatCompletionRequest;
 import cn.yinsheng.ai.gateway.model.EmbeddingRequest;
 import cn.yinsheng.ai.gateway.ollama.OllamaProxy;
 import cn.yinsheng.ai.gateway.queue.ComputeQueue;
+import cn.yinsheng.ai.gateway.remote.RemoteChatProxy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -26,15 +27,43 @@ public class OpenAiCompatibleController {
   private final OllamaProxy ollamaProxy;
   private final ComputeQueue computeQueue;
   private final ObjectMapper objectMapper;
+  private final RemoteChatProxy remoteChat;
 
-  public OpenAiCompatibleController(OllamaProxy ollamaProxy, ComputeQueue computeQueue, ObjectMapper objectMapper) {
+  public OpenAiCompatibleController(OllamaProxy ollamaProxy, ComputeQueue computeQueue, ObjectMapper objectMapper,
+      RemoteChatProxy remoteChat) {
     this.ollamaProxy = ollamaProxy;
     this.computeQueue = computeQueue;
     this.objectMapper = objectMapper;
+    this.remoteChat = remoteChat;
   }
 
   @PostMapping("/v1/chat/completions")
   public Object chat(@RequestBody ChatCompletionRequest request, HttpServletResponse response) throws Exception {
+    if (remoteChat.enabled()) {
+      try (ComputeQueue.Lease ignored = computeQueue.enterChat()) {
+        if (!Boolean.TRUE.equals(request.stream())) return ResponseEntity.ok(remoteChat.chat(request));
+        response.setContentType(MediaType.TEXT_EVENT_STREAM_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.setHeader("X-Accel-Buffering", "no");
+        try {
+          remoteChat.stream(request, event -> {
+            try {
+              response.getOutputStream().write(event.getBytes(StandardCharsets.UTF_8));
+              response.getOutputStream().flush();
+            } catch (java.io.IOException ex) { throw new IllegalStateException("客户端连接已断开", ex); }
+          });
+        } catch (Exception ex) {
+          if (!response.isCommitted()) {
+            response.reset();
+            response.sendError(502, "模型服务暂时不可用");
+          } else {
+            writeSse(response.getOutputStream(), Map.of("error", Map.of("message", "模型响应中断，请重试")));
+            response.getOutputStream().flush();
+          }
+        }
+        return null;
+      }
+    }
     if (Boolean.TRUE.equals(request.stream())) {
       response.setStatus(HttpServletResponse.SC_OK);
       response.setContentType(MediaType.TEXT_EVENT_STREAM_VALUE);
@@ -87,6 +116,7 @@ public class OpenAiCompatibleController {
 
   @GetMapping("/v1/models")
   public Map<String, Object> models() {
+    if (remoteChat.enabled()) return remoteChat.models();
     return ollamaProxy.models();
   }
 

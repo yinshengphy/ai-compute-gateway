@@ -16,11 +16,21 @@ gateway:
   api-token: ${AI_COMPUTE_API_TOKEN:change-me}
   runtime-token: ${AI_COMPUTE_RUNTIME_TOKEN:}
   queue-timeout-ms: ${AI_COMPUTE_QUEUE_TIMEOUT_MS:30000}
-  chat-concurrency: ${AI_COMPUTE_CHAT_CONCURRENCY:1}
+  chat-concurrency: ${AI_COMPUTE_CHAT_CONCURRENCY:2}
   embedding-concurrency: ${AI_COMPUTE_EMBEDDING_CONCURRENCY:1}
   default-chat-model: ${AI_COMPUTE_CHAT_MODEL:huihui_ai/qwen3-vl-abliterated:4b-instruct}
   fallback-chat-model: ${AI_COMPUTE_FALLBACK_CHAT_MODEL:qwen2.5:3b}
   default-embedding-model: ${AI_COMPUTE_EMBEDDING_MODEL:bge-m3}
-  fallback-embedding-model: ${AI_COMPUTE_FALLBACK_EMBEDDING_MODEL:nomic-embed-text}
+  fallback-embedding-model: ${AI_COMPUTE_FALLBACK_EMBEDDING_MODEL:bge-m3}
   chat-keep-alive: ${AI_COMPUTE_CHAT_KEEP_ALIVE:10m}
-  embedding-keep-alive: ${AI_COMPUTE_EMBEDDING_KEEP_ALIVE:5m}
+  embedding-keep-alive: ${AI_COMPUTE_EMBEDDING_KEEP_ALIVE:-1}
+  embedding-num-gpu: ${AI_COMPUTE_EMBEDDING_NUM_GPU:0}
+
+remote-chat:
+  enabled: ${REMOTE_CHAT_ENABLED:false}
+  base-url: ${CLIPROXY_BASE_URL:http://10.42.0.1:8318}
+  api-token: ${CLIPROXY_API_TOKEN:}
+  primary-model: ${REMOTE_CHAT_PRIMARY_MODEL:gemini-3.8-flash-high}
+  fallback-model: ${REMOTE_CHAT_FALLBACK_MODEL:gpt-6-luna}
+  timeout-seconds: ${REMOTE_CHAT_TIMEOUT_SECONDS:45}
+  circuit-seconds: ${REMOTE_CHAT_CIRCUIT_SECONDS:60}

@@ -311,15 +311,10 @@ public class OllamaProxy {
 
   public Map<String, Object> embeddings(EmbeddingRequest request) {
     String model = valueOrDefault(request.model(), properties.defaultEmbeddingModel());
-    String fallbackModel = fallbackEmbeddingModel(model);
-    try {
-      return embeddingsWithModel(model, request);
-    } catch (Exception ex) {
-      if (fallbackModel.equals(model)) {
-        throw ex;
-      }
-      return embeddingsWithModel(fallbackModel, request);
+    if (!model.equals(properties.defaultEmbeddingModel())) {
+      throw new IllegalArgumentException("向量模型必须与索引使用的模型保持一致");
     }
+    return embeddingsWithModel(model, request);
   }
 
   private Map<String, Object> embeddingsWithModel(String model, EmbeddingRequest request) {
