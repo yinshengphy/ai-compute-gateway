@@ -72,6 +72,32 @@ class RemoteChatProxyTest {
   }
 
   @Test
+  void filtersLargeImageAndReasoningFieldsWithoutLosingText() throws Exception {
+    HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/v1/chat/completions", exchange -> {
+      var request = mapper.readTree(exchange.getRequestBody());
+      assertThat(request.path("modalities").get(0).asText()).isEqualTo("text");
+      assertThat(request.path("reasoning_effort").asText()).isEqualTo("low");
+      assertThat(request.path("tool_choice").asText()).isEqualTo("none");
+      assertThat(request.path("max_tokens").asInt()).isGreaterThanOrEqualTo(2048);
+      String prelude = mapper.writeValueAsString(java.util.Map.of("choices", List.of(
+          java.util.Map.of("delta", java.util.Map.of("images", "x".repeat(80000), "reasoning_content", "private reasoning")))));
+      String body = "data: " + prelude + "\n\n"
+          + "data: {\"choices\":[{\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+      byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(200, bytes.length);
+      exchange.getResponseBody().write(bytes); exchange.close();
+    });
+    server.start();
+    try {
+      List<String> events = new ArrayList<>();
+      proxy(server).stream(request(true), events::add);
+      assertThat(String.join("", events)).contains("OK", "[DONE]")
+          .doesNotContain("images", "private reasoning", "reasoning_content");
+    } finally { server.stop(0); }
+  }
+
+  @Test
   void neverFallsBackAfterPublishingContent() throws Exception {
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     List<String> models = new ArrayList<>();

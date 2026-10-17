@@ -4,6 +4,7 @@ import cn.yinsheng.ai.gateway.config.RemoteChatProperties;
 import cn.yinsheng.ai.gateway.model.ChatCompletionRequest;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.URI;
@@ -70,7 +71,7 @@ public class RemoteChatProxy {
       } catch (Exception ex) {
         boolean retryable = !(ex instanceof UpstreamException up) || up.retryable;
         log.warn("远程聊天失败 model={} published={} retryable={} errorType={}",
-            model, published[0], retryable, ex.getClass().getSimpleName());
+            model, published[0], retryable, ex instanceof UpstreamException up ? up.getMessage() : ex.getClass().getSimpleName());
         if (ex instanceof InterruptedException) {
           Thread.currentThread().interrupt();
           throw new IllegalStateException("模型请求已中断");
@@ -92,6 +93,19 @@ public class RemoteChatProxy {
     body.values().removeIf(java.util.Objects::isNull);
     body.put("model", model);
     body.put("stream", consumer != null);
+    body.put("modalities", List.of("text"));
+    body.put("reasoning_effort", "low");
+    if (request.tools() == null || request.tools().isEmpty()) {
+      body.put("tools", List.of());
+      body.put("tool_choice", "none");
+    }
+    body.put("max_tokens", Math.max(2048, request.max_tokens() == null ? 2048 : request.max_tokens()));
+    List<Map<String, Object>> messages = new java.util.ArrayList<>();
+    messages.add(Map.of("role", "system", "content", "本接口仅输出文本和请求中声明的工具调用。不要生成或编辑图片，不调用图片生成工具。"));
+    if (request.messages() != null) {
+      for (var message : request.messages()) messages.add(mapper.convertValue(message, Map.class));
+    }
+    body.put("messages", messages);
     HttpRequest upstream = HttpRequest.newBuilder()
         .uri(URI.create(properties.baseUrl() + "/v1/chat/completions"))
         .timeout(Duration.ofSeconds(properties.timeoutSeconds()))
@@ -108,7 +122,7 @@ public class RemoteChatProxy {
       if (response.statusCode() / 100 != 2) {
         int status = response.statusCode();
         String error = new String(input.readNBytes(16384), StandardCharsets.UTF_8).toLowerCase(java.util.Locale.ROOT);
-        throw new UpstreamException(status == 401 || status == 403 || status == 408
+        throw new UpstreamException("HTTP_" + status, status == 401 || status == 403 || status == 408
             || status == 429 || status >= 500
             || (status == 400 && error.contains("location is not supported")));
       }
@@ -116,11 +130,13 @@ public class RemoteChatProxy {
         JsonNode result = mapper.readTree(input);
         JsonNode message = result.path("choices").path(0).path("message");
         if (result.has("error") || (message.path("content").asText("").isBlank()
-            && message.path("tool_calls").isEmpty())) throw new UpstreamException(true);
+            && message.path("tool_calls").isEmpty())) throw new UpstreamException("EMPTY_RESPONSE", true);
+        if (message instanceof ObjectNode object) object.remove(List.of("images", "audio", "reasoning_content", "reasoning"));
         return result;
       }
       StringBuilder pending = new StringBuilder();
       boolean completed = false;
+      String finishReason = "";
       try (var reader = new BufferedReader(new InputStreamReader(input, StandardCharsets.UTF_8))) {
         String line;
         while ((line = reader.readLine()) != null) {
@@ -129,13 +145,14 @@ public class RemoteChatProxy {
           if (data.isEmpty()) continue;
           if ("[DONE]".equals(data)) { completed = true; break; }
           JsonNode node = mapper.readTree(data);
-          if (node.has("error")) throw new UpstreamException(true);
+          if (node.has("error")) throw new UpstreamException("STREAM_ERROR", true);
           JsonNode choice = node.path("choices").path(0);
           JsonNode delta = choice.path("delta");
-          String event = "data: " + data + "\n\n";
+          if (delta instanceof ObjectNode object) object.remove(List.of("images", "audio", "reasoning_content", "reasoning"));
+          String event = "data: " + mapper.writeValueAsString(node) + "\n\n";
           if (!published[0]) {
             pending.append(event);
-            if (pending.length() > 65536) throw new UpstreamException(true);
+            if (pending.length() > 65536) throw new UpstreamException("PRELUDE_TOO_LARGE", true);
             if (!delta.path("content").asText("").isEmpty() || !delta.path("tool_calls").isEmpty()) {
               published[0] = true;
               consumer.accept(pending.toString());
@@ -144,10 +161,12 @@ public class RemoteChatProxy {
           } else consumer.accept(event);
           if (!choice.path("finish_reason").isNull() && !choice.path("finish_reason").isMissingNode()) {
             completed = true;
+            finishReason = choice.path("finish_reason").asText();
           }
         }
       }
-      if (!completed || !published[0]) throw new UpstreamException(true);
+      if (!completed || !published[0]) throw new UpstreamException(
+          !published[0] ? "EMPTY_STREAM_" + finishReason : "INCOMPLETE_STREAM", true);
       consumer.accept("data: [DONE]\n\n");
       return null;
     } finally { watchdog.shutdownNow(); }
@@ -155,6 +174,6 @@ public class RemoteChatProxy {
 
   private static final class UpstreamException extends RuntimeException {
     private final boolean retryable;
-    private UpstreamException(boolean retryable) { super("上游模型请求失败"); this.retryable = retryable; }
+    private UpstreamException(String code, boolean retryable) { super(code); this.retryable = retryable; }
   }
 }
