@@ -46,6 +46,32 @@ class RemoteChatProxyTest {
   }
 
   @Test
+  void fallsBackForRegionRestrictionButNotInvalidArguments() throws Exception {
+    for (String error : List.of("User location is not supported", "invalid messages argument")) {
+      HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+      List<String> models = new ArrayList<>();
+      server.createContext("/v1/chat/completions", exchange -> {
+        String model = mapper.readTree(exchange.getRequestBody()).path("model").asText();
+        models.add(model);
+        byte[] bytes = ("primary".equals(model) ? error
+            : "{\"choices\":[{\"message\":{\"content\":\"OK\"}}]}").getBytes(StandardCharsets.UTF_8);
+        exchange.sendResponseHeaders("primary".equals(model) ? 400 : 200, bytes.length);
+        exchange.getResponseBody().write(bytes); exchange.close();
+      });
+      server.start();
+      try {
+        if (error.startsWith("User location")) {
+          proxy(server).chat(request(false));
+          assertThat(models).containsExactly("primary", "backup");
+        } else {
+          assertThatThrownBy(() -> proxy(server).chat(request(false))).isInstanceOf(IllegalStateException.class);
+          assertThat(models).containsExactly("primary");
+        }
+      } finally { server.stop(0); }
+    }
+  }
+
+  @Test
   void neverFallsBackAfterPublishingContent() throws Exception {
     HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     List<String> models = new ArrayList<>();

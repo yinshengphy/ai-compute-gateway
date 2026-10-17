@@ -107,8 +107,10 @@ public class RemoteChatProxy {
     try (var input = response.body()) {
       if (response.statusCode() / 100 != 2) {
         int status = response.statusCode();
+        String error = new String(input.readNBytes(16384), StandardCharsets.UTF_8).toLowerCase(java.util.Locale.ROOT);
         throw new UpstreamException(status == 401 || status == 403 || status == 408
-            || status == 429 || status >= 500);
+            || status == 429 || status >= 500
+            || (status == 400 && error.contains("location is not supported")));
       }
       if (consumer == null) {
         JsonNode result = mapper.readTree(input);
