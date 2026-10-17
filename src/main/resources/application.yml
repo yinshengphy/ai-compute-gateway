@@ -23,7 +23,7 @@ gateway:
   default-embedding-model: ${AI_COMPUTE_EMBEDDING_MODEL:bge-m3}
   fallback-embedding-model: ${AI_COMPUTE_FALLBACK_EMBEDDING_MODEL:bge-m3}
   chat-keep-alive: ${AI_COMPUTE_CHAT_KEEP_ALIVE:10m}
-  embedding-keep-alive: ${AI_COMPUTE_EMBEDDING_KEEP_ALIVE:-1}
+  embedding-keep-alive: ${AI_COMPUTE_EMBEDDING_KEEP_ALIVE:-1s}
   embedding-num-gpu: ${AI_COMPUTE_EMBEDDING_NUM_GPU:0}
 
 remote-chat:
